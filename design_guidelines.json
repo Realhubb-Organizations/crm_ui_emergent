@@ -1,0 +1,233 @@
+{
+  "theme_and_archetype": {
+    "theme": "Light",
+    "archetype": "4 (Swiss & High-Contrast) + Premium Enterprise Navy",
+    "rationale": "Enterprise CRM requires high information density and clarity (Swiss archetype). By grounding the UI in rich Navy Blue instead of stark black, we achieve the requested 'Premium Enterprise SaaS' feel (Salesforce/Linear/Stripe inspired). Colors are functional, backgrounds are clean, and shadows are tinted and soft."
+  },
+  "colors": {
+    "brand": {
+      "navy_blue": "#0B1B3D",
+      "royal_blue": "#1D4ED8",
+      "light_blue": "#EFF6FF"
+    },
+    "background": {
+      "app": "#F8FAFC",
+      "surface": "#FFFFFF",
+      "surface_highlight": "#F1F5F9",
+      "header_dark": "#0B1B3D"
+    },
+    "text": {
+      "primary": "#0B1B3D",
+      "secondary": "#64748B",
+      "tertiary": "#94A3B8",
+      "inverse": "#FFFFFF",
+      "brand": "#1D4ED8"
+    },
+    "border": {
+      "default": "#E2E8F0",
+      "focus": "#1D4ED8",
+      "transparent": "rgba(11, 27, 61, 0.08)"
+    },
+    "status": {
+      "success_bg": "#DCFCE7",
+      "success_text": "#15803D",
+      "warning_bg": "#FEF3C7",
+      "warning_text": "#B45309",
+      "error_bg": "#FEE2E2",
+      "error_text": "#B91C1C",
+      "info_bg": "#DBEAFE",
+      "info_text": "#1D4ED8",
+      "hot_lead": "#FF4500"
+    }
+  },
+  "typography": {
+    "font_families": {
+      "heading": "Outfit, System",
+      "body": "DM Sans, System"
+    },
+    "scale": {
+      "h1": { "fontSize": 32, "lineHeight": 40, "fontWeight": "800", "letterSpacing": -0.5 },
+      "h2": { "fontSize": 24, "lineHeight": 32, "fontWeight": "700", "letterSpacing": -0.5 },
+      "h3": { "fontSize": 20, "lineHeight": 28, "fontWeight": "600", "letterSpacing": -0.3 },
+      "h4": { "fontSize": 18, "lineHeight": 26, "fontWeight": "600", "letterSpacing": -0.2 },
+      "body_large": { "fontSize": 16, "lineHeight": 24, "fontWeight": "400" },
+      "body_regular": { "fontSize": 14, "lineHeight": 20, "fontWeight": "400" },
+      "body_medium": { "fontSize": 14, "lineHeight": 20, "fontWeight": "500" },
+      "caption": { "fontSize": 12, "lineHeight": 16, "fontWeight": "500", "letterSpacing": 0.2 },
+      "overline": { "fontSize": 10, "lineHeight": 14, "fontWeight": "700", "textTransform": "uppercase", "letterSpacing": 1.0 }
+    }
+  },
+  "spacing": {
+    "xs": 4,
+    "sm": 8,
+    "md": 16,
+    "lg": 24,
+    "xl": 32,
+    "2xl": 48,
+    "3xl": 64
+  },
+  "radii": {
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 20,
+    "full": 9999
+  },
+  "shadows": {
+    "sm": {
+      "shadowColor": "#0B1B3D",
+      "shadowOffset": { "width": 0, "height": 2 },
+      "shadowOpacity": 0.04,
+      "shadowRadius": 4,
+      "elevation": 2
+    },
+    "md": {
+      "shadowColor": "#0B1B3D",
+      "shadowOffset": { "width": 0, "height": 4 },
+      "shadowOpacity": 0.06,
+      "shadowRadius": 8,
+      "elevation": 4
+    },
+    "lg": {
+      "shadowColor": "#0B1B3D",
+      "shadowOffset": { "width": 0, "height": 8 },
+      "shadowOpacity": 0.08,
+      "shadowRadius": 16,
+      "elevation": 8
+    }
+  },
+  "components": {
+    "card": {
+      "backgroundColor": "#FFFFFF",
+      "borderRadius": 16,
+      "padding": 16,
+      "shadow": "sm",
+      "borderWidth": 1,
+      "borderColor": "#E2E8F0",
+      "marginVertical": 8
+    },
+    "button": {
+      "primary": {
+        "backgroundColor": "#1D4ED8",
+        "borderRadius": 12,
+        "paddingVertical": 14,
+        "paddingHorizontal": 24,
+        "alignItems": "center"
+      },
+      "secondary": {
+        "backgroundColor": "#EFF6FF",
+        "borderRadius": 12,
+        "paddingVertical": 14,
+        "paddingHorizontal": 24,
+        "alignItems": "center"
+      },
+      "outline": {
+        "backgroundColor": "transparent",
+        "borderWidth": 1,
+        "borderColor": "#E2E8F0",
+        "borderRadius": 12,
+        "paddingVertical": 14,
+        "paddingHorizontal": 24,
+        "alignItems": "center"
+      }
+    },
+    "chip": {
+      "container": {
+        "backgroundColor": "#F8FAFC",
+        "borderWidth": 1,
+        "borderColor": "#E2E8F0",
+        "borderRadius": 20,
+        "paddingVertical": 6,
+        "paddingHorizontal": 16,
+        "marginRight": 8
+      },
+      "active": {
+        "backgroundColor": "#1D4ED8",
+        "borderColor": "#1D4ED8"
+      }
+    },
+    "bottom_navigation": {
+      "backgroundColor": "#FFFFFF",
+      "borderTopWidth": 1,
+      "borderColor": "#E2E8F0",
+      "paddingTop": 12,
+      "paddingBottom": 24,
+      "activeColor": "#1D4ED8",
+      "inactiveColor": "#64748B",
+      "shadow": "lg"
+    },
+    "charts": {
+      "library": "victory-native",
+      "colorScale": ["#1D4ED8", "#3B82F6", "#93C5FD", "#DBEAFE", "#0B1B3D"],
+      "fontFamily": "DM Sans",
+      "axisColor": "#E2E8F0"
+    }
+  },
+  "screens": {
+    "dashboard": {
+      "header": "Dark Navy Premium Header (#0B1B3D) with Light Blue metrics cards overlapping the bottom edge. Includes 'Executive Attention Center' badge.",
+      "layout": "Vertical scroll. KPI Grid (2 cols) -> Sales Funnel -> Lead Source Donut -> Marketing Performance -> Top Properties/Agents.",
+      "interactions": "Sticky header. Expandable 'Recent Activities' feed."
+    },
+    "leads": {
+      "header": "Sticky Search Bar + Sticky Horizontal Scrollable Filter Chips (No wrap).",
+      "layout": "List view by default. Cards have Agent Avatar, Status Chip, Hot Lead Indicator (Flame icon/#FF4500), and quick action buttons (Call/WhatsApp).",
+      "features": "Toggle to Kanban Pipeline view. Horizontal scrolling between pipeline stages."
+    },
+    "properties": {
+      "header": "Search + Location/BHK Filter Chips.",
+      "layout": "Rich cards with large property image (max 200px height, 16px radius), price, area, and nested KPI strip (Lead count, Visits, Bookings)."
+    },
+    "analytics": {
+      "header": "Executive Report toggle, Date Range sticky chips.",
+      "layout": "KPI Tiles (CPL, CTR, ROAS) at top. Stacked bar charts for Campaigns, Line charts for Conversions over time. High data density, crisp thin borders."
+    },
+    "more": {
+      "header": "Profile Header with Avatar, Role, and Settings Gear.",
+      "layout": "Grouped list view (iOS Settings style). Groups: Profile, Management (Team/Campaign), Integration, Support, Security, Logout. Use left-aligned Lucide icons per row."
+    }
+  },
+  "media": {
+    "avatars": [
+      {
+        "url": "https://images.unsplash.com/photo-1600878459138-e1123b37cb30?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTV8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBidXNpbmVzcyUyMGhlYWRzaG90JTIwcG9ydHJhaXR8ZW58MHx8fHwxNzgyMTk1Mzk1fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Male Executive Agent Avatar",
+        "category": "team"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTV8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBidXNpbmVzcyUyMGhlYWRzaG90JTIwcG9ydHJhaXR8ZW58MHx8fHwxNzgyMTk1Mzk1fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Female Manager Avatar",
+        "category": "team"
+      }
+    ],
+    "properties": [
+      {
+        "url": "https://images.unsplash.com/photo-1613490493576-7fde63acd811?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzR8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjByZWFsJTIwZXN0YXRlJTIwcHJvcGVydHklMjBleHRlcmlvcnxlbnwwfHx8fDE3ODIxOTUzOTV8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Modern Villa Exterior",
+        "category": "real_estate"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1628744448840-55bdb2497bd4?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzR8MHwxfHNlYXJjaHw0fHxtb2Rlcm4lMjByZWFsJTIwZXN0YXRlJTIwcHJvcGVydHklMjBleHRlcmlvcnxlbnwwfHx8fDE3ODIxOTUzOTV8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Luxury Apartment Building",
+        "category": "real_estate"
+      }
+    ],
+    "brand": [
+      {
+        "url": "https://images.pexels.com/photos/26576975/pexels-photo-26576975.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Company Logo Placeholder (White Background)",
+        "category": "logo"
+      }
+    ]
+  },
+  "instructions_to_main_agent": {
+    "framework": "Expo React Native (.js files, NOT .tsx).",
+    "styling": "Use standard React Native StyleSheet. Apply tokens strictly from this JSON.",
+    "icons": "Use 'lucide-react-native'. No emoji icons. Standardize size to 20 or 24.",
+    "testing_attributes": "All interactive elements MUST include `testID` (the React Native equivalent of `data-testid`). E.g., `testID=\"login-submit-button\"`.",
+    "charts_implementation": "Use 'victory-native' or 'react-native-chart-kit'. Prefer crisp line/bar charts without heavy background grids.",
+    "mobile_patterns": "Ensure chips are horizontally scrollable (ScrollView horizontal={true} showsHorizontalScrollIndicator={false}). Keep Navigation sticky at bottom. Avoid nested ScrollViews in the same direction.",
+    "card_layout": "Never center content by default. Use left-alignment for scannable data. Use Row/Flexbox with 'space-between' for metric label vs value.",
+    "brand_adherence": "Do NOT use default Inter font if possible, load Outfit and DM Sans via @expo-google-fonts. If omitted, default to system fonts with heavy weight adjustments. Strict adherence to Navy/Royal/Light Blue palette. No Teal, No Purple."
+  }
+}
