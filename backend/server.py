@@ -1,59 +1,774 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
+"""TASKEZY CRM Admin – FastAPI backend.
+
+Provides JWT-based auth and CRM endpoints (leads, properties, agents, analytics).
+All routes prefixed with /api so the K8s ingress can route them correctly.
+"""
+from __future__ import annotations
+
 import logging
-from pathlib import Path
-from pydantic import BaseModel, Field
-from typing import List
+import os
+import random
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Optional
 
+import bcrypt
+import jwt
+from dotenv import load_dotenv
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
+from fastapi.security import OAuth2PasswordBearer
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, EmailStr, Field
+from starlette.middleware.cors import CORSMiddleware
 
+# ------------------------------ Config ---------------------------------------
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+MONGO_URL = os.environ["MONGO_URL"]
+DB_NAME = os.environ["DB_NAME"]
+JWT_SECRET = os.environ["JWT_SECRET"]
+JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
+JWT_EXPIRES_MIN = int(os.environ.get("JWT_EXPIRES_MIN", "1440"))
+ADMIN_EMAIL = os.environ["ADMIN_EMAIL"].lower().strip()
+ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+ADMIN_NAME = os.environ.get("ADMIN_NAME", "Admin")
 
-# Create the main app without a prefix
-app = FastAPI()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("taskezy")
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+# ------------------------------ DB -------------------------------------------
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
+
+users_col = db["users"]
+leads_col = db["leads"]
+properties_col = db["properties"]
+agents_col = db["agents"]
+activities_col = db["activities"]
+campaigns_col = db["campaigns"]
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+# ------------------------------ App ------------------------------------------
+app = FastAPI(title="TASKEZY CRM Admin API")
+api = APIRouter(prefix="/api")
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.dict()
-    status_obj = StatusCheck(**status_dict)
-    _ = await db.status_checks.insert_one(status_obj.dict())
-    return status_obj
+# ------------------------------ Helpers --------------------------------------
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find().to_list(1000)
-    return [StatusCheck(**status_check) for status_check in status_checks]
 
-# Include the router in the main app
-app.include_router(api_router)
+def iso(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def hash_pw(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_pw(password: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+
+def create_token(payload: dict[str, Any]) -> str:
+    data = payload.copy()
+    data["exp"] = now_utc() + timedelta(minutes=JWT_EXPIRES_MIN)
+    return jwt.encode(data, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+async def current_user(token: Optional[str] = Depends(oauth2_scheme)) -> dict:
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing token")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired") from None
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token") from None
+    email = payload.get("email")
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+    user = await users_col.find_one({"email": email}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
+# ------------------------------ Models ---------------------------------------
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: dict
+
+
+class UserPublic(BaseModel):
+    id: str
+    email: EmailStr
+    name: str
+    role: str
+    avatar: Optional[str] = None
+
+
+class LeadCreate(BaseModel):
+    name: str
+    phone: str
+    email: Optional[EmailStr] = None
+    source: str = "Website"
+    interest: Optional[str] = None
+    budget: Optional[float] = None
+    property_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class LeadUpdate(BaseModel):
+    status: Optional[str] = None
+    stage: Optional[str] = None
+    assigned_to: Optional[str] = None
+    notes: Optional[str] = None
+    is_hot: Optional[bool] = None
+    next_followup_at: Optional[str] = None
+
+
+# ------------------------------ Seed Data ------------------------------------
+LEAD_STATUSES = ["New", "Contacted", "Qualified", "Site Visit", "Negotiation", "Booked", "Lost"]
+LEAD_STAGES = ["New", "Contacted", "Qualified", "Site Visit", "Negotiation", "Booked"]
+LEAD_SOURCES = ["Website", "Facebook Ads", "Google Ads", "Instagram", "Referral", "Walk-in", "Magic Bricks", "99acres"]
+CITIES = ["Mumbai", "Bengaluru", "Pune", "Hyderabad", "Delhi NCR", "Chennai"]
+BHK_TYPES = ["1 BHK", "2 BHK", "3 BHK", "4 BHK", "Villa", "Penthouse"]
+
+INDIAN_FIRST = ["Aarav", "Vihaan", "Ananya", "Diya", "Ishaan", "Reyansh", "Kabir", "Saanvi", "Aanya", "Aditya",
+                "Arjun", "Riya", "Myra", "Aarohi", "Kiaan", "Vivaan", "Advait", "Ira", "Navya", "Rudra"]
+INDIAN_LAST = ["Sharma", "Verma", "Patel", "Reddy", "Iyer", "Mehta", "Kapoor", "Singh", "Nair", "Rao",
+               "Joshi", "Banerjee", "Chopra", "Malhotra", "Khanna", "Gupta", "Bose", "Pillai"]
+
+PROPERTY_IMAGES = [
+    "https://images.unsplash.com/photo-1613490493576-7fde63acd811?w=800&auto=format&fit=crop&q=70",
+    "https://images.unsplash.com/photo-1628744448840-55bdb2497bd4?w=800&auto=format&fit=crop&q=70",
+    "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=800&auto=format&fit=crop&q=70",
+    "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=800&auto=format&fit=crop&q=70",
+    "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=800&auto=format&fit=crop&q=70",
+    "https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?w=800&auto=format&fit=crop&q=70",
+    "https://images.unsplash.com/photo-1564013799919-ab600027ffc6?w=800&auto=format&fit=crop&q=70",
+    "https://images.unsplash.com/photo-1605276374104-dee2a0ed3cd6?w=800&auto=format&fit=crop&q=70",
+]
+
+AVATAR_URLS = [
+    "https://images.unsplash.com/photo-1600878459138-e1123b37cb30?w=200&q=70",
+    "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&q=70",
+    "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=200&q=70",
+    "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=200&q=70",
+    "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&q=70",
+    "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=200&q=70",
+]
+
+
+def rand_name() -> str:
+    return f"{random.choice(INDIAN_FIRST)} {random.choice(INDIAN_LAST)}"
+
+
+def rand_phone() -> str:
+    return "+91 " + "".join(str(random.randint(0, 9)) for _ in range(10))
+
+
+async def seed_admin() -> None:
+    existing = await users_col.find_one({"email": ADMIN_EMAIL})
+    if existing:
+        return
+    doc = {
+        "id": str(uuid.uuid4()),
+        "email": ADMIN_EMAIL,
+        "password_hash": hash_pw(ADMIN_PASSWORD),
+        "name": ADMIN_NAME,
+        "role": "admin",
+        "avatar": AVATAR_URLS[0],
+        "created_at": iso(now_utc()),
+    }
+    await users_col.insert_one(doc)
+    log.info("Seeded admin user: %s", ADMIN_EMAIL)
+
+
+async def seed_agents() -> list[dict]:
+    if await agents_col.count_documents({}) > 0:
+        return await agents_col.find({}, {"_id": 0}).to_list(100)
+    agents = []
+    for i in range(8):
+        agents.append({
+            "id": str(uuid.uuid4()),
+            "name": rand_name(),
+            "email": f"agent{i+1}@taskezy.com",
+            "phone": rand_phone(),
+            "avatar": AVATAR_URLS[i % len(AVATAR_URLS)],
+            "role": "agent",
+            "city": random.choice(CITIES),
+            "joined_at": iso(now_utc() - timedelta(days=random.randint(60, 800))),
+            "rating": round(random.uniform(3.8, 4.9), 2),
+        })
+    await agents_col.insert_many([a.copy() for a in agents])
+    return agents
+
+
+async def seed_properties() -> list[dict]:
+    if await properties_col.count_documents({}) > 0:
+        return await properties_col.find({}, {"_id": 0}).to_list(100)
+    project_names = [
+        "Skyline Heights", "Marina Residences", "Emerald Greens", "Imperial Towers",
+        "Royal Palms", "Lakeview Crest", "Pinnacle Vista", "Crescent Bay",
+        "Aurora Park", "Cedar Grove", "Westwind Enclave", "Ocean Pearl",
+    ]
+    builders = ["Prestige", "Sobha", "Lodha", "Godrej", "DLF", "Brigade", "Hiranandani", "Oberoi"]
+    items: list[dict] = []
+    for i, name in enumerate(project_names):
+        city = random.choice(CITIES)
+        price_min = random.randint(60, 250)  # Lakhs
+        price_max = price_min + random.randint(20, 200)
+        items.append({
+            "id": str(uuid.uuid4()),
+            "name": name,
+            "builder": random.choice(builders),
+            "city": city,
+            "location": f"{random.choice(['Whitefield', 'Andheri', 'Bandra', 'Gachibowli', 'Koregaon Park', 'Sector 62', 'OMR'])}, {city}",
+            "bhk": random.sample(BHK_TYPES, k=random.randint(2, 3)),
+            "price_min": price_min,  # in lakhs
+            "price_max": price_max,
+            "area_min": random.randint(650, 1200),
+            "area_max": random.randint(1500, 3500),
+            "image": PROPERTY_IMAGES[i % len(PROPERTY_IMAGES)],
+            "rera": f"RERA/{city[:3].upper()}/{1000+i}",
+            "status": random.choice(["Under Construction", "Ready to Move", "New Launch"]),
+            "amenities": random.sample(
+                ["Swimming Pool", "Gym", "Clubhouse", "Garden", "24x7 Security", "Power Backup", "Kids Play Area", "Spa"],
+                k=5,
+            ),
+            "leads_count": random.randint(20, 220),
+            "site_visits": random.randint(8, 80),
+            "bookings": random.randint(1, 25),
+            "created_at": iso(now_utc() - timedelta(days=random.randint(30, 600))),
+        })
+    await properties_col.insert_many([p.copy() for p in items])
+    return items
+
+
+async def seed_leads(agents: list[dict], props: list[dict]) -> None:
+    if await leads_col.count_documents({}) > 0:
+        return
+    leads: list[dict] = []
+    for _ in range(120):
+        created = now_utc() - timedelta(days=random.randint(0, 60), hours=random.randint(0, 23))
+        status_choice = random.choices(
+            LEAD_STATUSES,
+            weights=[28, 22, 18, 12, 8, 7, 5],
+            k=1,
+        )[0]
+        agent = random.choice(agents)
+        prop = random.choice(props)
+        is_hot = random.random() < 0.18
+        leads.append({
+            "id": str(uuid.uuid4()),
+            "name": rand_name(),
+            "phone": rand_phone(),
+            "email": f"lead{random.randint(1000,9999)}@gmail.com",
+            "source": random.choice(LEAD_SOURCES),
+            "status": status_choice,
+            "stage": status_choice if status_choice in LEAD_STAGES else "Lost",
+            "interest": random.choice(BHK_TYPES),
+            "budget": random.choice([50, 75, 100, 150, 200, 250, 350, 500]),
+            "city": prop["city"],
+            "property_id": prop["id"],
+            "property_name": prop["name"],
+            "assigned_to": agent["id"],
+            "assigned_name": agent["name"],
+            "assigned_avatar": agent["avatar"],
+            "is_hot": is_hot,
+            "score": random.randint(20, 99),
+            "notes": random.choice([
+                "Asked for floor plan",
+                "Wants weekend site visit",
+                "Comparing with competitor",
+                "Loan pre-approved",
+                "Negotiating price",
+                "",
+            ]),
+            "next_followup_at": iso(now_utc() + timedelta(days=random.randint(-1, 5))),
+            "created_at": iso(created),
+            "updated_at": iso(created + timedelta(hours=random.randint(1, 48))),
+        })
+    await leads_col.insert_many([doc.copy() for doc in leads])
+
+
+async def seed_activities() -> None:
+    if await activities_col.count_documents({}) > 0:
+        return
+    leads = await leads_col.find({}, {"_id": 0}).to_list(60)
+    if not leads:
+        return
+    actions = [
+        ("call", "Called {name}"),
+        ("whatsapp", "WhatsApp sent to {name}"),
+        ("email", "Email sent to {name}"),
+        ("site_visit", "Site visit scheduled with {name}"),
+        ("status", "{name} moved to Qualified"),
+        ("note", "Note added on {name}"),
+    ]
+    acts = []
+    for _ in range(40):
+        lead = random.choice(leads)
+        kind, tmpl = random.choice(actions)
+        acts.append({
+            "id": str(uuid.uuid4()),
+            "type": kind,
+            "title": tmpl.format(name=lead["name"]),
+            "lead_id": lead["id"],
+            "lead_name": lead["name"],
+            "agent_name": lead.get("assigned_name", "—"),
+            "agent_avatar": lead.get("assigned_avatar"),
+            "created_at": iso(now_utc() - timedelta(hours=random.randint(0, 96))),
+        })
+    await activities_col.insert_many(acts)
+
+
+async def seed_campaigns() -> None:
+    if await campaigns_col.count_documents({}) > 0:
+        return
+    items = []
+    names = ["Festive Push - Mumbai", "Q1 Brand Awareness", "Bengaluru Luxury", "Pune Mid-Segment",
+             "Hyderabad Retargeting", "Delhi NCR Premium"]
+    channels = ["Facebook", "Google", "Instagram", "YouTube"]
+    for n in names:
+        spend = random.randint(50000, 500000)
+        leads = random.randint(80, 900)
+        clicks = leads * random.randint(8, 22)
+        impressions = clicks * random.randint(12, 28)
+        bookings = random.randint(1, 20)
+        revenue = bookings * random.randint(40, 180) * 100000
+        items.append({
+            "id": str(uuid.uuid4()),
+            "name": n,
+            "channel": random.choice(channels),
+            "status": random.choice(["Active", "Paused", "Completed"]),
+            "spend": spend,
+            "impressions": impressions,
+            "clicks": clicks,
+            "leads": leads,
+            "bookings": bookings,
+            "revenue": revenue,
+            "cpl": round(spend / max(leads, 1), 2),
+            "ctr": round(clicks / max(impressions, 1) * 100, 2),
+            "roas": round(revenue / max(spend, 1), 2),
+            "created_at": iso(now_utc() - timedelta(days=random.randint(10, 120))),
+        })
+    await campaigns_col.insert_many(items)
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    await users_col.create_index("email", unique=True)
+    await seed_admin()
+    agents = await seed_agents()
+    props = await seed_properties()
+    await seed_leads(agents, props)
+    await seed_activities()
+    await seed_campaigns()
+    log.info("Seed complete.")
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    client.close()
+
+
+# ------------------------------ Routes : Auth --------------------------------
+@api.get("/")
+async def root() -> dict:
+    return {"app": "taskezy-crm-admin", "ok": True}
+
+
+@api.post("/auth/login", response_model=TokenResponse)
+async def login(payload: LoginRequest) -> Any:
+    user = await users_col.find_one({"email": payload.email.lower().strip()})
+    if not user or not verify_pw(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    token = create_token({"email": user["email"], "role": user["role"], "sub": user["id"]})
+    public = {k: v for k, v in user.items() if k not in {"_id", "password_hash"}}
+    return {"access_token": token, "token_type": "bearer", "user": public}
+
+
+@api.get("/auth/me")
+async def me(user: dict = Depends(current_user)) -> dict:
+    return user
+
+
+# ------------------------------ Routes : Dashboard ---------------------------
+@api.get("/dashboard/summary")
+async def dashboard_summary(user: dict = Depends(current_user)) -> dict:
+    total = await leads_col.count_documents({})
+    new = await leads_col.count_documents({"status": "New"})
+    qualified = await leads_col.count_documents({"status": "Qualified"})
+    site_visits = await leads_col.count_documents({"status": "Site Visit"})
+    booked = await leads_col.count_documents({"status": "Booked"})
+    hot = await leads_col.count_documents({"is_hot": True})
+    lost = await leads_col.count_documents({"status": "Lost"})
+    conversion = round((booked / total) * 100, 1) if total else 0.0
+
+    # Sales funnel counts in stage order
+    funnel = []
+    for stage in LEAD_STAGES:
+        c = await leads_col.count_documents({"status": stage})
+        funnel.append({"stage": stage, "count": c})
+
+    # Lead source breakdown
+    sources: dict[str, int] = {}
+    async for doc in leads_col.find({}, {"_id": 0, "source": 1}):
+        sources[doc["source"]] = sources.get(doc["source"], 0) + 1
+    source_list = [{"source": k, "count": v} for k, v in sorted(sources.items(), key=lambda x: -x[1])]
+
+    # Marketing perf - last 7 days lead counts
+    today = now_utc().date()
+    weekly = []
+    for i in range(6, -1, -1):
+        day = today - timedelta(days=i)
+        start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        c = await leads_col.count_documents({
+            "created_at": {"$gte": iso(start), "$lt": iso(end)},
+        })
+        weekly.append({"day": day.strftime("%a"), "leads": c})
+
+    # Executive attention - overdue follow-ups, hot leads, lost
+    now_iso = iso(now_utc())
+    overdue = await leads_col.count_documents({
+        "next_followup_at": {"$lt": now_iso},
+        "status": {"$nin": ["Booked", "Lost"]},
+    })
+
+    return {
+        "kpis": {
+            "total_leads": total,
+            "new_leads": new,
+            "qualified_leads": qualified,
+            "site_visits": site_visits,
+            "bookings": booked,
+            "conversion_pct": conversion,
+            "hot_leads": hot,
+            "lost_leads": lost,
+        },
+        "attention": {
+            "overdue_followups": overdue,
+            "hot_leads": hot,
+            "stalled_negotiations": await leads_col.count_documents({"status": "Negotiation"}),
+        },
+        "funnel": funnel,
+        "sources": source_list,
+        "weekly_leads": weekly,
+    }
+
+
+@api.get("/dashboard/top-properties")
+async def top_properties(user: dict = Depends(current_user)) -> list[dict]:
+    items = await properties_col.find({}, {"_id": 0}).sort("bookings", -1).limit(5).to_list(5)
+    for it in items:
+        leads = it.get("leads_count", 0)
+        bookings = it.get("bookings", 0)
+        it["conversion_pct"] = round((bookings / leads) * 100, 1) if leads else 0.0
+    return items
+
+
+@api.get("/dashboard/top-agents")
+async def top_agents(user: dict = Depends(current_user)) -> list[dict]:
+    agents = await agents_col.find({}, {"_id": 0}).to_list(50)
+    results = []
+    for a in agents:
+        total = await leads_col.count_documents({"assigned_to": a["id"]})
+        booked = await leads_col.count_documents({"assigned_to": a["id"], "status": "Booked"})
+        results.append({
+            **a,
+            "leads": total,
+            "bookings": booked,
+            "conversion_pct": round((booked / total) * 100, 1) if total else 0.0,
+        })
+    results.sort(key=lambda x: (x["bookings"], x["conversion_pct"]), reverse=True)
+    return results[:5]
+
+
+@api.get("/dashboard/activities")
+async def recent_activities(limit: int = 12, user: dict = Depends(current_user)) -> list[dict]:
+    return await activities_col.find({}, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+
+
+@api.get("/dashboard/followups")
+async def followup_center(user: dict = Depends(current_user)) -> list[dict]:
+    now_iso = iso(now_utc())
+    items = await leads_col.find(
+        {"next_followup_at": {"$lte": now_iso}, "status": {"$nin": ["Booked", "Lost"]}},
+        {"_id": 0},
+    ).sort("next_followup_at", 1).limit(15).to_list(15)
+    return items
+
+
+@api.get("/dashboard/insights")
+async def ai_insights(user: dict = Depends(current_user)) -> list[dict]:
+    total = await leads_col.count_documents({}) or 1
+    hot = await leads_col.count_documents({"is_hot": True})
+    booked = await leads_col.count_documents({"status": "Booked"})
+    sources: dict[str, int] = {}
+    async for doc in leads_col.find({}, {"_id": 0, "source": 1}):
+        sources[doc["source"]] = sources.get(doc["source"], 0) + 1
+    top_source = max(sources.items(), key=lambda x: x[1]) if sources else ("—", 0)
+
+    return [
+        {
+            "id": "insight-conv",
+            "title": "Conversion holding steady",
+            "body": f"{round(booked/total*100,1)}% of leads converted to bookings this period. Focus on Qualified → Site Visit.",
+            "trend": "up",
+            "icon": "trending-up",
+        },
+        {
+            "id": "insight-source",
+            "title": f"{top_source[0]} is your #1 source",
+            "body": f"{top_source[1]} leads originated from {top_source[0]}. Consider scaling spend by 15%.",
+            "trend": "up",
+            "icon": "target",
+        },
+        {
+            "id": "insight-hot",
+            "title": f"{hot} hot leads need attention",
+            "body": "Hot leads have 3x higher conversion. Assign senior agents within 24 hours.",
+            "trend": "warn",
+            "icon": "flame",
+        },
+    ]
+
+
+# ------------------------------ Routes : Leads -------------------------------
+@api.get("/leads")
+async def list_leads(
+    q: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
+    source: Optional[str] = None,
+    is_hot: Optional[bool] = None,
+    limit: int = 100,
+    user: dict = Depends(current_user),
+) -> list[dict]:
+    query: dict = {}
+    if q:
+        query["$or"] = [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"phone": {"$regex": q, "$options": "i"}},
+            {"email": {"$regex": q, "$options": "i"}},
+        ]
+    if status_filter and status_filter != "All":
+        query["status"] = status_filter
+    if source:
+        query["source"] = source
+    if is_hot is not None:
+        query["is_hot"] = is_hot
+    return await leads_col.find(query, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+
+
+@api.get("/leads/pipeline")
+async def leads_pipeline(user: dict = Depends(current_user)) -> dict:
+    out: dict = {}
+    for stage in LEAD_STAGES:
+        items = await leads_col.find({"status": stage}, {"_id": 0}).sort("created_at", -1).limit(20).to_list(20)
+        out[stage] = items
+    return out
+
+
+@api.get("/leads/{lead_id}")
+async def lead_detail(lead_id: str, user: dict = Depends(current_user)) -> dict:
+    lead = await leads_col.find_one({"id": lead_id}, {"_id": 0})
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    timeline = await activities_col.find({"lead_id": lead_id}, {"_id": 0}).sort("created_at", -1).to_list(30)
+    if not timeline:
+        # synthesize a small timeline
+        timeline = [{
+            "id": str(uuid.uuid4()),
+            "type": "created",
+            "title": f"Lead created from {lead['source']}",
+            "lead_id": lead_id,
+            "agent_name": lead.get("assigned_name"),
+            "created_at": lead.get("created_at"),
+        }]
+    return {"lead": lead, "timeline": timeline}
+
+
+@api.post("/leads")
+async def create_lead(payload: LeadCreate, user: dict = Depends(current_user)) -> dict:
+    doc = {
+        "id": str(uuid.uuid4()),
+        **payload.dict(),
+        "status": "New",
+        "stage": "New",
+        "is_hot": False,
+        "score": 50,
+        "assigned_to": None,
+        "assigned_name": None,
+        "assigned_avatar": None,
+        "created_at": iso(now_utc()),
+        "updated_at": iso(now_utc()),
+        "next_followup_at": iso(now_utc() + timedelta(days=1)),
+    }
+    await leads_col.insert_one(doc.copy())
+    return doc
+
+
+@api.patch("/leads/{lead_id}")
+async def update_lead(lead_id: str, payload: LeadUpdate, user: dict = Depends(current_user)) -> dict:
+    update = {k: v for k, v in payload.dict().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    update["updated_at"] = iso(now_utc())
+    if "status" in update and "stage" not in update:
+        update["stage"] = update["status"] if update["status"] in LEAD_STAGES else "Lost"
+    res = await leads_col.find_one_and_update(
+        {"id": lead_id}, {"$set": update}, return_document=True,
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    # log activity
+    await activities_col.insert_one({
+        "id": str(uuid.uuid4()),
+        "type": "status" if "status" in update else "update",
+        "title": f"{res['name']} updated" if "status" not in update else f"{res['name']} moved to {update['status']}",
+        "lead_id": lead_id,
+        "lead_name": res["name"],
+        "agent_name": res.get("assigned_name"),
+        "agent_avatar": res.get("assigned_avatar"),
+        "created_at": iso(now_utc()),
+    })
+    res.pop("_id", None)
+    return res
+
+
+# ------------------------------ Routes : Properties --------------------------
+@api.get("/properties")
+async def list_properties(
+    q: Optional[str] = None,
+    city: Optional[str] = None,
+    bhk: Optional[str] = None,
+    user: dict = Depends(current_user),
+) -> list[dict]:
+    query: dict = {}
+    if q:
+        query["$or"] = [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"builder": {"$regex": q, "$options": "i"}},
+            {"location": {"$regex": q, "$options": "i"}},
+        ]
+    if city and city != "All":
+        query["city"] = city
+    if bhk and bhk != "All":
+        query["bhk"] = {"$in": [bhk]}
+    items = await properties_col.find(query, {"_id": 0}).sort("bookings", -1).to_list(100)
+    for it in items:
+        leads = it.get("leads_count", 0) or 0
+        bookings = it.get("bookings", 0) or 0
+        it["conversion_pct"] = round((bookings / leads) * 100, 1) if leads else 0.0
+    return items
+
+
+@api.get("/properties/{property_id}")
+async def property_detail(property_id: str, user: dict = Depends(current_user)) -> dict:
+    p = await properties_col.find_one({"id": property_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Property not found")
+    leads = p.get("leads_count", 0) or 0
+    bookings = p.get("bookings", 0) or 0
+    p["conversion_pct"] = round((bookings / leads) * 100, 1) if leads else 0.0
+    # related leads
+    related = await leads_col.find({"property_id": property_id}, {"_id": 0}).sort("created_at", -1).limit(10).to_list(10)
+    return {"property": p, "leads": related}
+
+
+# ------------------------------ Routes : Analytics ---------------------------
+@api.get("/analytics/overview")
+async def analytics_overview(days: int = 30, user: dict = Depends(current_user)) -> dict:
+    since = now_utc() - timedelta(days=days)
+    since_iso = iso(since)
+
+    total = await leads_col.count_documents({"created_at": {"$gte": since_iso}})
+    booked = await leads_col.count_documents({"created_at": {"$gte": since_iso}, "status": "Booked"})
+    site_visits = await leads_col.count_documents({"created_at": {"$gte": since_iso}, "status": "Site Visit"})
+
+    # campaigns aggregates
+    spend = 0
+    revenue = 0
+    leads = 0
+    clicks = 0
+    impressions = 0
+    bookings_c = 0
+    async for c in campaigns_col.find({}, {"_id": 0}):
+        spend += c.get("spend", 0)
+        revenue += c.get("revenue", 0)
+        leads += c.get("leads", 0)
+        clicks += c.get("clicks", 0)
+        impressions += c.get("impressions", 0)
+        bookings_c += c.get("bookings", 0)
+
+    cpl = round(spend / max(leads, 1), 0)
+    ctr = round(clicks / max(impressions, 1) * 100, 2)
+    roas = round(revenue / max(spend, 1), 2)
+
+    # Daily series
+    series = []
+    for i in range(days - 1, -1, -1):
+        day = (now_utc() - timedelta(days=i)).date()
+        s = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+        e = s + timedelta(days=1)
+        c = await leads_col.count_documents({"created_at": {"$gte": iso(s), "$lt": iso(e)}})
+        b = await leads_col.count_documents({"created_at": {"$gte": iso(s), "$lt": iso(e)}, "status": "Booked"})
+        series.append({"day": day.strftime("%d %b"), "leads": c, "bookings": b})
+
+    # source breakdown
+    src: dict[str, int] = {}
+    async for doc in leads_col.find({"created_at": {"$gte": since_iso}}, {"_id": 0, "source": 1}):
+        src[doc["source"]] = src.get(doc["source"], 0) + 1
+    sources = [{"source": k, "count": v} for k, v in sorted(src.items(), key=lambda x: -x[1])]
+
+    return {
+        "kpis": {
+            "total_leads": total,
+            "bookings": booked,
+            "site_visits": site_visits,
+            "cpl": cpl,
+            "ctr": ctr,
+            "roas": roas,
+            "spend": spend,
+            "revenue": revenue,
+        },
+        "series": series,
+        "sources": sources,
+    }
+
+
+@api.get("/analytics/campaigns")
+async def campaigns_list(user: dict = Depends(current_user)) -> list[dict]:
+    return await campaigns_col.find({}, {"_id": 0}).sort("spend", -1).to_list(50)
+
+
+# ------------------------------ Routes : Team --------------------------------
+@api.get("/agents")
+async def list_agents(user: dict = Depends(current_user)) -> list[dict]:
+    return await agents_col.find({}, {"_id": 0}).to_list(50)
+
+
+# ------------------------------ Register router ------------------------------
+app.include_router(api)
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,14 +777,3 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
