@@ -36,15 +36,39 @@ export default function MoreScreen() {
       title: 'Personal',
       rows: [
         { icon: User, title: 'Profile', subtitle: 'Edit your profile details', testID: 'more-profile' },
-        { icon: Bell, title: 'Notifications', subtitle: 'Email, push, & in-app alerts', testID: 'more-notifications' },
-        { icon: FileBarChart, title: 'Reports', subtitle: 'Generate & export reports', testID: 'more-reports' },
+        {
+          icon: Bell,
+          title: 'Notifications',
+          subtitle: 'Email, push, & in-app alerts',
+          testID: 'more-notifications',
+          onPress: () => router.push('/notifications'),
+        },
+        {
+          icon: FileBarChart,
+          title: 'Reports',
+          subtitle: 'Generate & export reports',
+          testID: 'more-reports',
+          onPress: () => router.push('/more/reports'),
+        },
       ],
     },
     {
       title: 'Management',
       rows: [
-        { icon: Users, title: 'Team Management', subtitle: 'Agents, managers, roles', testID: 'more-team' },
-        { icon: Megaphone, title: 'Campaign Management', subtitle: 'Ads, channels, budgets', testID: 'more-campaigns' },
+        {
+          icon: Users,
+          title: 'Team Management',
+          subtitle: 'Agents, managers, roles',
+          testID: 'more-team',
+          onPress: () => router.push('/more/team'),
+        },
+        {
+          icon: Megaphone,
+          title: 'Campaign Management',
+          subtitle: 'Ads, channels, budgets',
+          testID: 'more-campaigns',
+          onPress: () => router.push('/more/campaigns'),
+        },
       ],
     },
     {

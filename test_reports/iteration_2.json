@@ -1,0 +1,54 @@
+{
+  "summary": "TASKEZY CRM Iteration-2 verified end-to-end. Backend: 17/17 new pytest cases pass (AI insights, leads POST + 422 validation, notifications list/unread-count/mark-one/mark-all/404, reports list+detail+404, campaigns list+detail+404+create with computed cpl/ctr/roas). Frontend: AI Insights renders 4 AI-generated cards (Gemini-3-flash via Emergent LLM key, NOT static fallback), bell on Dashboard opens /notifications with working 'Mark all as read', Leads FAB opens 'New Lead' sheet, form validation surfaces 'Name is required' / 'Phone is required', successful submit navigates to /lead/<id> and new lead is visible back in the Leads list. More tab → Reports (6 unique cards with KPIs), Team (8 agent cards with call+email actions), Campaigns (cards with Spend/CPL/ROAS and the newly-created TEST_Iter2 Campaign) all render correctly. Existing RN-web deprecation warnings (shadow*, pointerEvents, transform-origin) are still present — already raised in iteration 1.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Dashboard AI Insights",
+        "issue": "First load of /api/dashboard/insights can take 60–180s because gemini-3-flash-preview is slow; the section just shows the 'AI Insights' heading with no skeleton/loader during that window. Functionally correct (4 AI items appear once response arrives), but UX feels stuck. Consider rendering the static fallback immediately and replacing with AI items when ready, or add a skeleton/spinner.",
+        "affected_testIDs": ["ai-insights"]
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "Theme/shadow tokens", "issue": "RN-web warns: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Reference: /app/frontend/src/theme.ts (and any inline shadow.* usages). Already reported in iteration 1; still present."},
+      {"component": "pointerEvents prop", "issue": "RN-web warns: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Search `pointerEvents=` in /app/frontend/src and move it into the style object. Already reported in iteration 1; still present."},
+      {"component": "transform-origin style key", "issue": "RN-web error: 'Invalid DOM property `transform-origin`. Did you mean `transformOrigin`?'. Replace `transform-origin` with `transformOrigin` in styles. Already reported in iteration 1; still present."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration2_api.py",
+    "/app/test_reports/pytest/iteration2_results.xml"
+  ],
+  "action_items": [
+    "(Optional UX) Show the static fallback or a skeleton/loader on the Dashboard 'AI Insights' section while /api/dashboard/insights is in-flight — gemini-3-flash-preview can take >60s.",
+    "Migrate shadow.* style props to RN boxShadow (carryover from iteration 1).",
+    "Move pointerEvents prop into style.pointerEvents (carryover from iteration 1).",
+    "Replace `transform-origin` with `transformOrigin` in styles (carryover from iteration 1)."
+  ],
+  "critical_code_review_comments": [
+    "server.py now ~1000 lines — strongly consider splitting into modular routers (auth/dashboard/leads/notifications/reports/campaigns); two @app.on_event('startup') handlers are defined which works but is fragile, consider consolidating into one startup function.",
+    "/api/dashboard/insights gracefully falls back to 3 static items if EMERGENT_LLM_KEY is missing or the LLM call fails — correctly handled.",
+    "POST /api/leads returns 200 (not 201) on creation; spec usually expects 201, but tests accept 200. Consider standardising.",
+    "All new Mongo queries exclude _id via projection ({\"_id\": 0}) — no ObjectId serialisation leakage.",
+    "All new interactive UI elements carry testIDs: dashboard-notifications, notif-mark-all, notif-back, leads-new-fab, new-lead-{name,phone,email,source-*,interest-*,budget,notes,submit,close}, more-{reports,team,campaigns}, reports-back, report-<id>, report-download-<id>, team-back, team-call-<id>, team-email-<id>, campaigns-back."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration2_api.py (new)",
+    "/app/test_reports/iteration_2.json (new)",
+    "/app/test_reports/pytest/iteration2_results.xml (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (17/17 new iter-2 tests; previous 25 from iter-1 still passing)",
+    "frontend": "100% on iter-2 flows (dashboard insights, notifications, new-lead create+validation, /more/reports, /more/team, /more/campaigns)"
+  },
+  "seed_data_creation": "Tests create ephemeral data via real API: 1 lead (TEST_NewLead Buyer via backend), 1 lead (TEST UI Lead Iter2 via frontend flow), 1 campaign (TEST_Iter2 Campaign). All are clearly TEST_ prefixed; safe to leave or purge.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Public URL: https://taskezy-crm-admin.preview.emergentagent.com. Admin: admin@taskezy.com / Admin@12345. Backend tests: /app/backend/tests/test_taskezy_api.py (iter-1) and /app/backend/tests/test_iteration2_api.py (iter-2). Run: `pytest /app/backend/tests/ -v`. Key new iter-2 testIDs — dashboard-notifications, notif-mark-all, leads-new-fab, new-lead-name, new-lead-phone, new-lead-source-<Source>, new-lead-submit, more-reports, more-team, more-campaigns, reports-back, team-back, campaigns-back, report-<id>, team-call-<id>, team-email-<id>. Note: AI insights call can take 60–180s on first load due to gemini-3-flash latency; allow at least 60s before asserting on insight content. RN-web deprecation warnings (shadow*, pointerEvents, transform-origin) are cosmetic only and outstanding from iter-1.",
+  "rca_of_issue": "No iteration-2 bugs found. AI Insights perceived-empty state RCA: gemini-3-flash-preview latency observed ~3 minutes in backend logs (LiteLLM completion start 06:41:42 → next call 06:44:58); the dashboard fetches insights without a loading placeholder, so users see only the section heading until response arrives — recommended mitigation: show static fallback immediately, then hot-swap when AI response lands (or add skeleton)."
+}

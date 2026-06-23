@@ -137,7 +137,7 @@ export default function DashboardScreen() {
               Hello, {user?.name?.split(' ')[0] ?? 'Admin'}
             </Text>
           </View>
-          <TouchableOpacity style={styles.bellBtn} testID="dashboard-notifications">
+          <TouchableOpacity style={styles.bellBtn} testID="dashboard-notifications" onPress={() => router.push('/notifications')}>
             <Bell size={20} color={colors.text.inverse} strokeWidth={2.2} />
             <View style={styles.bellDot} />
           </TouchableOpacity>

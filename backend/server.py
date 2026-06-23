@@ -48,6 +48,10 @@ properties_col = db["properties"]
 agents_col = db["agents"]
 activities_col = db["activities"]
 campaigns_col = db["campaigns"]
+notifications_col = db["notifications"]
+reports_col = db["reports"]
+
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
 
 # ------------------------------ App ------------------------------------------
@@ -523,34 +527,109 @@ async def ai_insights(user: dict = Depends(current_user)) -> list[dict]:
     total = await leads_col.count_documents({}) or 1
     hot = await leads_col.count_documents({"is_hot": True})
     booked = await leads_col.count_documents({"status": "Booked"})
+    qualified = await leads_col.count_documents({"status": "Qualified"})
+    site_visits = await leads_col.count_documents({"status": "Site Visit"})
     sources: dict[str, int] = {}
     async for doc in leads_col.find({}, {"_id": 0, "source": 1}):
         sources[doc["source"]] = sources.get(doc["source"], 0) + 1
-    top_source = max(sources.items(), key=lambda x: x[1]) if sources else ("—", 0)
+    top_source = max(sources.items(), key=lambda x: x[1]) if sources else ("Website", 0)
 
-    return [
+    # campaigns aggregates
+    best_camp = None
+    async for c in campaigns_col.find({}, {"_id": 0}).sort("roas", -1).limit(1):
+        best_camp = c
+
+    summary = {
+        "total_leads": total,
+        "hot_leads": hot,
+        "qualified": qualified,
+        "site_visits": site_visits,
+        "bookings": booked,
+        "conversion_pct": round(booked / total * 100, 1),
+        "top_source": {"name": top_source[0], "count": top_source[1]},
+        "best_campaign": {
+            "name": best_camp["name"] if best_camp else None,
+            "roas": best_camp["roas"] if best_camp else None,
+        },
+    }
+
+    fallback = [
         {
-            "id": "insight-conv",
+            "id": "i-conv",
             "title": "Conversion holding steady",
-            "body": f"{round(booked/total*100,1)}% of leads converted to bookings this period. Focus on Qualified → Site Visit.",
+            "body": f"{summary['conversion_pct']}% of leads converted to bookings. Push Qualified leads to Site Visit faster.",
             "trend": "up",
             "icon": "trending-up",
         },
         {
-            "id": "insight-source",
+            "id": "i-source",
             "title": f"{top_source[0]} is your #1 source",
             "body": f"{top_source[1]} leads originated from {top_source[0]}. Consider scaling spend by 15%.",
             "trend": "up",
             "icon": "target",
         },
         {
-            "id": "insight-hot",
+            "id": "i-hot",
             "title": f"{hot} hot leads need attention",
-            "body": "Hot leads have 3x higher conversion. Assign senior agents within 24 hours.",
+            "body": "Hot leads convert 3x better. Assign senior agents within 24 hours.",
             "trend": "warn",
             "icon": "flame",
         },
     ]
+
+    if not EMERGENT_LLM_KEY:
+        return fallback
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage  # type: ignore
+
+        system = (
+            "You are an executive CRM analyst for a real-estate sales team. "
+            "Given a JSON summary of CRM KPIs, return EXACTLY 4 short, decisive insights for "
+            "the head of sales. Each insight must be one sentence (<= 22 words), be data-grounded "
+            "and end with a clear action. Respond ONLY with a JSON array of 4 objects, no prose, no "
+            "code fences. Each object has: title (<=8 words), body (one sentence ending in action), "
+            "trend ('up'|'down'|'warn'), icon (one of 'trending-up','target','flame','alert-triangle','sparkles')."
+        )
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"insights-{uuid.uuid4()}",
+            system_message=system,
+        ).with_model("gemini", "gemini-3-flash-preview")
+
+        msg = UserMessage(text=f"KPIs:\n{summary}\n\nReturn JSON only.")
+        raw = await chat.send_message(msg)
+        text = raw if isinstance(raw, str) else str(raw)
+        # strip code fences if any
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lower().startswith("json"):
+                text = text[4:]
+        import json as _json
+
+        # find the first JSON array in the text
+        start = text.find("[")
+        end = text.rfind("]")
+        if start == -1 or end == -1:
+            return fallback
+        items = _json.loads(text[start : end + 1])
+        out = []
+        for i, it in enumerate(items[:4]):
+            if not isinstance(it, dict):
+                continue
+            out.append({
+                "id": f"ai-{i}",
+                "title": str(it.get("title", "")).strip()[:80] or fallback[i % len(fallback)]["title"],
+                "body": str(it.get("body", "")).strip()[:240] or fallback[i % len(fallback)]["body"],
+                "trend": it.get("trend", "up") if it.get("trend") in {"up", "down", "warn"} else "up",
+                "icon": it.get("icon", "sparkles"),
+                "ai": True,
+            })
+        return out or fallback
+    except Exception as e:
+        log.warning("AI insights fell back: %s", e)
+        return fallback
 
 
 # ------------------------------ Routes : Leads -------------------------------
@@ -765,6 +844,152 @@ async def campaigns_list(user: dict = Depends(current_user)) -> list[dict]:
 @api.get("/agents")
 async def list_agents(user: dict = Depends(current_user)) -> list[dict]:
     return await agents_col.find({}, {"_id": 0}).to_list(50)
+
+
+async def seed_notifications() -> None:
+    if await notifications_col.count_documents({}) > 0:
+        return
+    leads = await leads_col.find({}, {"_id": 0}).limit(20).to_list(20)
+    types = [
+        ("lead", "New hot lead assigned", "info"),
+        ("followup", "Follow-up due today", "warn"),
+        ("booking", "Booking confirmed", "success"),
+        ("status", "Lead moved to Negotiation", "info"),
+        ("alert", "Lead is going cold", "warn"),
+        ("system", "Weekly executive report ready", "info"),
+    ]
+    notes = []
+    for i in range(18):
+        kind, title, sev = random.choice(types)
+        lead = random.choice(leads) if leads else None
+        notes.append({
+            "id": str(uuid.uuid4()),
+            "type": kind,
+            "title": title,
+            "body": f"{lead['name']} · {lead.get('property_name','')}" if lead else "",
+            "severity": sev,
+            "lead_id": lead["id"] if lead else None,
+            "read": i > 4,
+            "created_at": iso(now_utc() - timedelta(hours=random.randint(0, 96))),
+        })
+    await notifications_col.insert_many(notes)
+
+
+async def seed_reports() -> None:
+    if await reports_col.count_documents({}) > 0:
+        return
+    items = []
+    titles = [
+        ("Weekly Executive Summary", "weekly", "Performance digest with KPIs, conversion, and top campaigns."),
+        ("Monthly Pipeline Review", "monthly", "Full funnel review with stage velocity and bottlenecks."),
+        ("Q1 Marketing ROI", "quarterly", "CPL, CTR and ROAS breakdown by channel for Q1."),
+        ("Agent Performance Scorecard", "monthly", "Top and bottom performers, with focus areas."),
+        ("Property Performance Report", "monthly", "Lead and booking velocity per property."),
+        ("Source Attribution Report", "weekly", "Lead-source share & conversion ranking."),
+    ]
+    for i, (t, cad, body) in enumerate(titles):
+        items.append({
+            "id": str(uuid.uuid4()),
+            "title": t,
+            "cadence": cad,
+            "body": body,
+            "kpis": {
+                "leads": random.randint(80, 450),
+                "bookings": random.randint(5, 40),
+                "roas": round(random.uniform(2.1, 6.4), 2),
+            },
+            "created_at": iso(now_utc() - timedelta(days=i * 3 + 1)),
+        })
+    await reports_col.insert_many(items)
+
+
+@app.on_event("startup")
+async def on_startup_more() -> None:
+    await seed_notifications()
+    await seed_reports()
+
+
+# ------------------------------ Routes : Notifications -----------------------
+@api.get("/notifications")
+async def list_notifications(user: dict = Depends(current_user)) -> list[dict]:
+    return await notifications_col.find({}, {"_id": 0}).sort("created_at", -1).limit(50).to_list(50)
+
+
+@api.get("/notifications/unread-count")
+async def unread_count(user: dict = Depends(current_user)) -> dict:
+    n = await notifications_col.count_documents({"read": False})
+    return {"unread": n}
+
+
+@api.post("/notifications/{nid}/read")
+async def mark_read(nid: str, user: dict = Depends(current_user)) -> dict:
+    res = await notifications_col.update_one({"id": nid}, {"$set": {"read": True}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+@api.post("/notifications/read-all")
+async def mark_all_read(user: dict = Depends(current_user)) -> dict:
+    await notifications_col.update_many({"read": False}, {"$set": {"read": True}})
+    return {"ok": True}
+
+
+# ------------------------------ Routes : Reports -----------------------------
+@api.get("/reports")
+async def list_reports(user: dict = Depends(current_user)) -> list[dict]:
+    return await reports_col.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+
+
+@api.get("/reports/{rid}")
+async def report_detail(rid: str, user: dict = Depends(current_user)) -> dict:
+    r = await reports_col.find_one({"id": rid}, {"_id": 0})
+    if not r:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return r
+
+
+# ------------------------------ Routes : Campaigns (CRUD-lite) ---------------
+class CampaignCreate(BaseModel):
+    name: str
+    channel: str = "Facebook"
+    spend: float = 0
+    leads: int = 0
+    bookings: int = 0
+
+
+@api.get("/campaigns")
+async def campaigns_full(user: dict = Depends(current_user)) -> list[dict]:
+    return await campaigns_col.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+
+
+@api.get("/campaigns/{cid}")
+async def campaign_detail(cid: str, user: dict = Depends(current_user)) -> dict:
+    c = await campaigns_col.find_one({"id": cid}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return c
+
+
+@api.post("/campaigns")
+async def create_campaign(payload: CampaignCreate, user: dict = Depends(current_user)) -> dict:
+    impressions = max(1, payload.leads * 18)
+    clicks = max(1, payload.leads * 12)
+    revenue = payload.bookings * 80 * 100000  # demo
+    doc = {
+        "id": str(uuid.uuid4()),
+        **payload.dict(),
+        "status": "Active",
+        "impressions": impressions,
+        "clicks": clicks,
+        "revenue": revenue,
+        "cpl": round(payload.spend / max(payload.leads, 1), 2),
+        "ctr": round(clicks / impressions * 100, 2),
+        "roas": round(revenue / max(payload.spend, 1), 2),
+        "created_at": iso(now_utc()),
+    }
+    await campaigns_col.insert_one(doc.copy())
+    return doc
 
 
 # ------------------------------ Register router ------------------------------

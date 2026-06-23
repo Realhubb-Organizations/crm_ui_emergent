@@ -5,11 +5,12 @@ import {
   List,
   MessageCircle,
   Phone,
+  Plus,
   Search,
   SlidersHorizontal,
   X,
 } from 'lucide-react-native';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   FlatList,
   Modal,
@@ -25,8 +26,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '@/src/api/client';
 import { Avatar } from '@/src/components/Avatar';
 import { ChipRow } from '@/src/components/ChipRow';
+import { NewLeadSheet } from '@/src/components/NewLeadSheet';
 import { Button, Card, Pill } from '@/src/components/ui';
-import { colors, radii, shadow, spacing, statusColor, typography } from '@/src/theme';
+import { colors, spacing, statusColor, typography } from '@/src/theme';
 
 const STATUS_FILTERS = [
   { label: 'All', value: 'All' },
@@ -69,6 +71,7 @@ export default function LeadsScreen() {
   const [pipeline, setPipeline] = useState<Record<string, Lead[]>>({});
   const [loading, setLoading] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [newLeadOpen, setNewLeadOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -96,8 +99,6 @@ export default function LeadsScreen() {
     const t = setTimeout(load, 250);
     return () => clearTimeout(t);
   }, [load]);
-
-  const headerHeight = useMemo(() => 56 + 56 + 56, []);
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
@@ -181,6 +182,25 @@ export default function LeadsScreen() {
         hotOnly={hotOnly}
         setHotOnly={setHotOnly}
       />
+
+      <NewLeadSheet
+        visible={newLeadOpen}
+        onClose={() => setNewLeadOpen(false)}
+        onCreated={(id) => {
+          setNewLeadOpen(false);
+          load();
+          router.push(`/lead/${id}`);
+        }}
+      />
+
+      <TouchableOpacity
+        testID="leads-new-fab"
+        activeOpacity={0.85}
+        style={styles.fab}
+        onPress={() => setNewLeadOpen(true)}
+      >
+        <Plus size={22} color={colors.text.inverse} strokeWidth={2.6} />
+      </TouchableOpacity>
     </SafeAreaView>
   );
 }
@@ -509,4 +529,20 @@ const styles = StyleSheet.create({
   toggleOn: { backgroundColor: colors.brand.royal },
   knob: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff' },
   knobOn: { alignSelf: 'flex-end' },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.brand.royal,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: colors.brand.navy,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 10,
+  },
 });
