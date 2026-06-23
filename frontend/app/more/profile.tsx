@@ -61,12 +61,12 @@ export default function ProfileScreen() {
           <Card style={{ alignItems: 'center', paddingVertical: spacing.lg }}>
             <Avatar uri={avatar} name={name} size={88} />
             <View style={{ flexDirection: 'row', gap: 8, marginTop: spacing.md, flexWrap: 'wrap', justifyContent: 'center' }}>
-              {AVATAR_OPTIONS.map((url) => {
+              {AVATAR_OPTIONS.map((url, idx) => {
                 const active = url === avatar;
                 return (
                   <TouchableOpacity
                     key={url}
-                    testID={`profile-avatar-${url.slice(-12)}`}
+                    testID={`profile-avatar-${idx}`}
                     onPress={() => setAvatar(url)}
                     style={[styles.avatarOption, active ? styles.avatarOptionActive : null]}
                   >

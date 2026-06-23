@@ -544,6 +544,10 @@ async def followup_center(user: dict = Depends(current_user)) -> list[dict]:
 
 @api.get("/dashboard/insights")
 async def ai_insights(user: dict = Depends(current_user)) -> list[dict]:
+    cached = cache_get("dashboard_insights")
+    if cached is not None:
+        return cached
+
     total = await leads_col.count_documents({}) or 1
     hot = await leads_col.count_documents({"is_hot": True})
     booked = await leads_col.count_documents({"status": "Booked"})
