@@ -84,7 +84,7 @@ export default function MoreScreen() {
         { icon: Settings, title: 'Settings', subtitle: 'Preferences & workspace', testID: 'more-settings' },
         { icon: LifeBuoy, title: 'Support', subtitle: 'Chat with our team', testID: 'more-support' },
         { icon: BookOpen, title: 'Tutorials', subtitle: 'Learn the platform', testID: 'more-tutorials' },
-        { icon: Lock, title: 'Security', subtitle: 'Password, sessions, 2FA', testID: 'more-security' },
+        { icon: Lock, title: 'Security', subtitle: 'Password, sessions, 2FA', testID: 'more-security', onPress: () => router.push('/more/security') },
       ],
     },
   ];

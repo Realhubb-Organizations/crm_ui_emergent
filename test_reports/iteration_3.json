@@ -1,0 +1,69 @@
+{
+  "summary": "TASKEZY CRM Iteration-3 tested end-to-end. Backend: 24/25 pytest cases pass (agents CRUD incl. 404, campaigns CRUD with recomputed CPL/CTR/ROAS on PATCH incl. 404, profile PATCH /api/auth/me strips password_hash, change-password 400 paths + success-then-revert, 2FA full TOTP cycle via pyotp (status->setup->enable->disable with bad-code 400 guards), /api/register-push exists+auth-gated+422 on bad body and returns 502 with placeholder key — as expected). ONE CRITICAL BACKEND BUG: /api/dashboard/insights does NOT read from cache — cache_get('dashboard_insights') is never called. cache_set is set on every call, but the value is never retrieved, so every request re-runs Gemini (~30-120s) and returns DIFFERENT content. The iteration-3 caching feature is effectively non-functional. Frontend (web preview): login → tabs loads with 0 uncaught page errors (push module-scope correctly guarded by Platform.OS !== 'web'); More menu shows all iter-3 entries (more-profile, more-security, more-team, more-campaigns); /more/profile, /more/security, /more/team, /more/campaigns all render with the expected testIDs (profile-save, profile-security, 2fa-start, team-add-fab, team-edit-<id>, team-delete-<id>, camp-add-fab, camp-edit-<id>, camp-delete-<id>, pw-current/new/submit). Minor frontend bug: profile avatar testIDs collide (use `url.slice(-12)` which is the same `?w=200&q=70` query string for all unsplash avatars) — only ~4 distinct testIDs render for 6 avatars. RN-web deprecation warnings (shadow*, pointerEvents, transform-origin) still present (carryover from iter 1-2).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/dashboard/insights",
+        "issue": "Server-side caching feature is broken: cache_get() is never invoked, only cache_set(). Every call re-executes the Gemini LLM (slow + non-deterministic), so the iteration-3 'second call within 10 min is much faster + same payload' requirement FAILS. Fix: at the top of ai_insights(), add `cached = cache_get('dashboard_insights'); if cached: return cached`. Reference: /app/backend/server.py:545-656.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Profile avatar grid",
+        "issue": "Avatar testIDs use `profile-avatar-${url.slice(-12)}`. Since all 6 unsplash URLs end with the same query string `?w=200&q=70`, the last 12 chars overlap and produce duplicate/colliding testIDs (only 4 distinct ones rendered: profile-avatar-0?w=200&q=70, -2?w=200&q=70, -d?w=200&q=70, -e?w=200&q=70). Use an index-based testID like `profile-avatar-${idx}`. Reference: /app/frontend/app/more/profile.tsx:69.",
+        "testID": "profile-avatar-<idx>",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Dashboard AI Insights cache",
+        "issue": "Because GET /api/dashboard/insights has no cache_get path, every Dashboard mount re-triggers Gemini call (~30-120s). User-visible symptom: AI Insights section stays empty/non-deterministic on revisits within 10 minutes (defeats the iter-3 caching requirement).",
+        "affected_testIDs": ["ai-insights"]
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "Theme/shadow tokens", "issue": "RN-web warns: 'shadow*' style props are deprecated. Use 'boxShadow'. Reference: /app/frontend/src/theme.ts. Carryover from iter 1-2."},
+      {"component": "pointerEvents prop", "issue": "RN-web warns: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Carryover from iter 1-2."},
+      {"component": "transform-origin style key", "issue": "RN-web error: 'Invalid DOM property `transform-origin`. Did you mean `transformOrigin`?'. Carryover from iter 1-2."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3_api.py",
+    "/app/test_reports/pytest/iteration3_results.xml"
+  ],
+  "action_items": [
+    "[HIGH] Fix /api/dashboard/insights to actually use the cache: at function start, return cache_get('dashboard_insights') if present. Otherwise the 10-min caching feature is dead code. See /app/backend/server.py:546.",
+    "[LOW] Use an index-based testID in /app/frontend/app/more/profile.tsx:69 (e.g. `profile-avatar-${idx}`) so each of the 6 avatars has a unique testID.",
+    "[Carryover] Migrate `shadow.*` style props to RN boxShadow.",
+    "[Carryover] Move pointerEvents prop into style.pointerEvents.",
+    "[Carryover] Replace `transform-origin` with `transformOrigin`."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~1275 lines — split into routers (auth/2fa/profile/leads/campaigns/agents/dashboard/notifications/reports/push). Two @app.on_event('startup') handlers remain — consolidate.",
+    "register_push uses a global httpx.AsyncClient; it is never closed at shutdown. Consider closing _push_client in on_shutdown.",
+    "/api/auth/2fa/setup overwrites any in-progress pending secret on every call (acceptable) and /enable removes the pending secret on success — good. However, /setup is not auth-gated against 2FA being already enabled; calling /setup while 2FA is enabled silently overwrites a pending field — UX is fine but worth documenting.",
+    "POST /api/agents and /api/campaigns both return 200, not 201. Consistent with rest of API but iter-3 spec says 'creates an agent' — 201 would be more correct (the same was noted in iter-2).",
+    "All new endpoints exclude _id from responses (no ObjectId leakage) — good.",
+    "All new interactive UI elements expose testIDs: more-profile, more-security, more-team, more-campaigns, profile-back/save/security/name-input, security-back, pw-current/new/submit/toggle, 2fa-start, team-add-fab, team-edit-<id>, team-delete-<id>, team-call-<id>, camp-add-fab, camp-edit-<id>, camp-delete-<id>. Only gap: profile-avatar-* IDs collide (see ui_bugs)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3_api.py (new)",
+    "/app/test_reports/iteration_3.json (new)",
+    "/app/test_reports/pytest/iteration3_results.xml (new)"
+  ],
+  "success_rate": {
+    "backend": "96% (24/25 iter-3 tests; only failure is the cache-miss bug in /api/dashboard/insights)",
+    "frontend": "Iter-3 surfaces render with 0 page errors; all listed testIDs present except profile-avatar-* uniqueness (minor)"
+  },
+  "seed_data_creation": "Ephemeral test data created via real API and then cleaned up within the same suite: 1 agent (TEST_Iter3 Agent — created+updated+deleted), 1 campaign (TEST_Iter3 Campaign — created+patched+deleted), admin name briefly changed to 'TEST_Iter3 Admin' then restored, admin password briefly changed to 'NewAdmin@9876' then restored to Admin@12345, 2FA briefly enabled then disabled. End state: identical to start state. Note: iter-2 had left a TEST_Iter2 Campaign in the DB which is still present (not iter-3's concern).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Public URL: https://taskezy-crm-admin.preview.emergentagent.com. Admin: admin@taskezy.com / Admin@12345. Iter-3 test file: /app/backend/tests/test_iteration3_api.py — run with `pytest /app/backend/tests/test_iteration3_api.py -v`. After main agent fixes the /api/dashboard/insights cache_get miss, re-run TestInsightsCache::test_cache_hit_is_much_faster — first call may take 30-120s (Gemini), second within 10 min must be <1s and return IDENTICAL payload. To validate UI E2E for team/campaign CRUD, login first then visit /more/team and /more/campaigns; FAB testIDs are 'team-add-fab' and 'camp-add-fab'; per-row testIDs are team-edit-<uuid>/team-delete-<uuid>/camp-edit-<uuid>/camp-delete-<uuid>. Login testIDs are login-email-input/login-password-input/login-submit-button (NOT login-email/login-password/login-submit).",
+  "rca_of_issue": "RCA for AI insights cache failure: in /app/backend/server.py ai_insights() (lines 545-656), the function calls cache_set('dashboard_insights', ...) at three points but never calls cache_get('dashboard_insights') at the start. The cache helper functions are defined and work correctly (verified by import) — they're just not wired in. Reproduction: GET /api/dashboard/insights twice in quick succession with the same Bearer token — both calls take similar time AND can return different titles/bodies because Gemini is non-deterministic. Mitigation (1-line fix near line 546): `cached = cache_get('dashboard_insights')`; `if cached is not None: return cached`. This will instantly satisfy the iter-3 cache-hit-within-10-min requirement and stop hammering Gemini on every dashboard mount."
+}

@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -52,6 +53,25 @@ notifications_col = db["notifications"]
 reports_col = db["reports"]
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+EMERGENT_PUSH_KEY = os.environ.get("EMERGENT_PUSH_KEY", "placeholder")
+EMERGENT_PUSH_BASE_URL = "https://integrations.emergentagent.com"
+
+# Simple in-process TTL cache for expensive LLM responses.
+_cache: dict[str, tuple[float, Any]] = {}
+
+def cache_get(key: str) -> Any | None:
+    item = _cache.get(key)
+    if not item:
+        return None
+    expires, val = item
+    if expires < time.time():
+        _cache.pop(key, None)
+        return None
+    return val
+
+
+def cache_set(key: str, val: Any, ttl_seconds: int) -> None:
+    _cache[key] = (time.time() + ttl_seconds, val)
 
 
 # ------------------------------ App ------------------------------------------
@@ -578,6 +598,7 @@ async def ai_insights(user: dict = Depends(current_user)) -> list[dict]:
     ]
 
     if not EMERGENT_LLM_KEY:
+        cache_set("dashboard_insights", fallback, 600)
         return fallback
 
     try:
@@ -626,9 +647,12 @@ async def ai_insights(user: dict = Depends(current_user)) -> list[dict]:
                 "icon": it.get("icon", "sparkles"),
                 "ai": True,
             })
-        return out or fallback
+        result = out or fallback
+        cache_set("dashboard_insights", result, 600)
+        return result
     except Exception as e:
         log.warning("AI insights fell back: %s", e)
+        cache_set("dashboard_insights", fallback, 60)
         return fallback
 
 
@@ -990,6 +1014,252 @@ async def create_campaign(payload: CampaignCreate, user: dict = Depends(current_
     }
     await campaigns_col.insert_one(doc.copy())
     return doc
+
+
+class CampaignUpdate(BaseModel):
+    name: Optional[str] = None
+    channel: Optional[str] = None
+    status: Optional[str] = None
+    spend: Optional[float] = None
+    leads: Optional[int] = None
+    bookings: Optional[int] = None
+
+
+@api.patch("/campaigns/{cid}")
+async def update_campaign(cid: str, payload: CampaignUpdate, user: dict = Depends(current_user)) -> dict:
+    update = {k: v for k, v in payload.dict().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    existing = await campaigns_col.find_one({"id": cid}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    merged = {**existing, **update}
+    impressions = max(1, int(merged.get("leads", 0)) * 18)
+    clicks = max(1, int(merged.get("leads", 0)) * 12)
+    revenue = int(merged.get("bookings", 0)) * 80 * 100000
+    update["impressions"] = impressions
+    update["clicks"] = clicks
+    update["revenue"] = revenue
+    update["cpl"] = round(float(merged.get("spend", 0)) / max(int(merged.get("leads", 0)), 1), 2)
+    update["ctr"] = round(clicks / impressions * 100, 2)
+    update["roas"] = round(revenue / max(float(merged.get("spend", 0)), 1), 2)
+    await campaigns_col.update_one({"id": cid}, {"$set": update})
+    out = await campaigns_col.find_one({"id": cid}, {"_id": 0})
+    return out  # type: ignore[return-value]
+
+
+@api.delete("/campaigns/{cid}")
+async def delete_campaign(cid: str, user: dict = Depends(current_user)) -> dict:
+    res = await campaigns_col.delete_one({"id": cid})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return {"ok": True}
+
+
+# ------------------------------ Routes : Agents CRUD -------------------------
+class AgentCreate(BaseModel):
+    name: str
+    email: EmailStr
+    phone: str
+    city: str = "Mumbai"
+    rating: float = 4.5
+
+
+class AgentUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    city: Optional[str] = None
+    rating: Optional[float] = None
+
+
+@api.post("/agents")
+async def create_agent(payload: AgentCreate, user: dict = Depends(current_user)) -> dict:
+    doc = {
+        "id": str(uuid.uuid4()),
+        **payload.dict(),
+        "avatar": AVATAR_URLS[random.randint(0, len(AVATAR_URLS) - 1)],
+        "role": "agent",
+        "joined_at": iso(now_utc()),
+    }
+    await agents_col.insert_one(doc.copy())
+    return doc
+
+
+@api.patch("/agents/{aid}")
+async def update_agent(aid: str, payload: AgentUpdate, user: dict = Depends(current_user)) -> dict:
+    update = {k: v for k, v in payload.dict().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    res = await agents_col.find_one_and_update({"id": aid}, {"$set": update}, return_document=True)
+    if not res:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    res.pop("_id", None)
+    return res
+
+
+@api.delete("/agents/{aid}")
+async def delete_agent(aid: str, user: dict = Depends(current_user)) -> dict:
+    res = await agents_col.delete_one({"id": aid})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"ok": True}
+
+
+# ------------------------------ Routes : Profile + 2FA -----------------------
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    avatar: Optional[str] = None  # accepts URL or data URI
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@api.patch("/auth/me")
+async def update_me(payload: ProfileUpdate, user: dict = Depends(current_user)) -> dict:
+    update = {k: v for k, v in payload.dict().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    res = await users_col.find_one_and_update(
+        {"id": user["id"]}, {"$set": update}, return_document=True,
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="User not found")
+    res.pop("_id", None)
+    res.pop("password_hash", None)
+    return res
+
+
+@api.post("/auth/change-password")
+async def change_password(payload: PasswordChange, user: dict = Depends(current_user)) -> dict:
+    doc = await users_col.find_one({"id": user["id"]})
+    if not doc or not verify_pw(payload.current_password, doc["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    await users_col.update_one(
+        {"id": user["id"]}, {"$set": {"password_hash": hash_pw(payload.new_password)}},
+    )
+    return {"ok": True}
+
+
+@api.post("/auth/2fa/setup")
+async def twofa_setup(user: dict = Depends(current_user)) -> dict:
+    import pyotp
+
+    secret = pyotp.random_base32()
+    otp_uri = pyotp.totp.TOTP(secret).provisioning_uri(
+        name=user["email"], issuer_name="TASKEZY CRM",
+    )
+    await users_col.update_one(
+        {"id": user["id"]}, {"$set": {"twofa_secret_pending": secret}},
+    )
+    return {"secret": secret, "otp_uri": otp_uri}
+
+
+class TwoFAVerify(BaseModel):
+    code: str
+
+
+@api.post("/auth/2fa/enable")
+async def twofa_enable(payload: TwoFAVerify, user: dict = Depends(current_user)) -> dict:
+    import pyotp
+
+    doc = await users_col.find_one({"id": user["id"]})
+    secret = (doc or {}).get("twofa_secret_pending")
+    if not secret:
+        raise HTTPException(status_code=400, detail="No 2FA setup in progress. Call /setup first.")
+    if not pyotp.TOTP(secret).verify(payload.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid code")
+    await users_col.update_one(
+        {"id": user["id"]},
+        {"$set": {"twofa_secret": secret, "twofa_enabled": True},
+         "$unset": {"twofa_secret_pending": ""}},
+    )
+    return {"ok": True, "enabled": True}
+
+
+@api.post("/auth/2fa/disable")
+async def twofa_disable(payload: TwoFAVerify, user: dict = Depends(current_user)) -> dict:
+    import pyotp
+
+    doc = await users_col.find_one({"id": user["id"]})
+    secret = (doc or {}).get("twofa_secret")
+    if not secret:
+        raise HTTPException(status_code=400, detail="2FA is not enabled")
+    if not pyotp.TOTP(secret).verify(payload.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid code")
+    await users_col.update_one(
+        {"id": user["id"]},
+        {"$set": {"twofa_enabled": False}, "$unset": {"twofa_secret": ""}},
+    )
+    return {"ok": True, "enabled": False}
+
+
+@api.get("/auth/2fa/status")
+async def twofa_status(user: dict = Depends(current_user)) -> dict:
+    doc = await users_col.find_one({"id": user["id"]})
+    return {"enabled": bool((doc or {}).get("twofa_enabled", False))}
+
+
+# ------------------------------ Routes : Push notifications (relay) ----------
+import httpx  # noqa: E402
+
+_push_client: httpx.AsyncClient | None = None
+
+
+def _get_push_client() -> httpx.AsyncClient:
+    global _push_client
+    if _push_client is None:
+        _push_client = httpx.AsyncClient(
+            base_url=EMERGENT_PUSH_BASE_URL,
+            headers={"X-Push-Key": EMERGENT_PUSH_KEY},
+            timeout=10.0,
+        )
+    return _push_client
+
+
+class RegisterPushBody(BaseModel):
+    user_id: str
+    platform: str  # 'android' | 'ios'
+    device_token: str
+
+
+@api.post("/register-push", status_code=201)
+async def register_push(body: RegisterPushBody, user: dict = Depends(current_user)) -> dict:
+    try:
+        resp = await _get_push_client().post(
+            "/api/v1/push/users/register", json=body.model_dump(),
+        )
+    except Exception as e:
+        log.warning("register-push relay failed: %s", e)
+        raise HTTPException(status_code=502, detail="Push provider unavailable") from None
+    if resp.status_code == 401:
+        raise HTTPException(status_code=500, detail="EMERGENT_PUSH_KEY missing or invalid")
+    if resp.status_code >= 500:
+        raise HTTPException(status_code=502, detail="Push provider unavailable")
+    resp.raise_for_status()
+    return {"status": "registered"}
+
+
+async def send_push(recipients: list[str], data: dict, idempotency_key: Optional[str] = None) -> None:
+    if not recipients:
+        return
+    if len(recipients) > 100:
+        raise ValueError("max 100 recipients per /trigger call")
+    if "title" not in data or "message" not in data:
+        raise ValueError("data must include title and message")
+    payload: dict = {"recipients": recipients, "data": data}
+    if idempotency_key:
+        payload["$idempotency_key"] = idempotency_key
+    resp = await _get_push_client().post("/api/v1/push/trigger", json=payload)
+    if resp.status_code == 401:
+        raise RuntimeError("EMERGENT_PUSH_KEY missing or invalid")
+    if resp.status_code >= 500:
+        raise RuntimeError("Push provider unavailable")
+    resp.raise_for_status()
 
 
 # ------------------------------ Register router ------------------------------
