@@ -33,4 +33,13 @@ JWT stored in `expo-secure-store` via `@/src/utils/storage`. Token attached as `
 Custom SVG (`react-native-svg`) – Funnel, Donut, Bars, Line, Sparkline, StackedBar – no heavyweight chart library.
 
 ### Verified
-25/25 backend pytest cases pass. All frontend flows (login → dashboard → tabs → details → logout) verified by `testing_agent`.
+25/25 backend pytest cases pass (iteration 1) + 17/17 iteration-2 cases (gemini insights, POST /leads, notifications, reports, campaigns). All frontend flows verified by `testing_agent`.
+
+## Iteration 2 additions
+- **Live AI Insights via Gemini-3-flash** through Emergent LLM key. Data-grounded executive insights generated from real KPI snapshot. Graceful static fallback if the LLM is unavailable. Skeleton loader shown while the call is in flight (~30–120 s cold start) so the rest of the dashboard renders immediately.
+- **"+ New Lead" bottom-sheet** form (FAB on Leads tab) → POSTs to `/api/leads`, validates Name/Phone, routes to the new lead's detail screen.
+- **Notifications screen** at `/notifications` (also reachable from dashboard bell). 18 seeded notifications across follow-up/booking/alert/system/lead types. Mark-one and Mark-all-read flows wired to backend.
+- **Reports** screen (`/more/reports`) — 6 seeded executive reports with cadence + KPIs.
+- **Team Management** (`/more/team`) — 8 agents with live performance pills (leads/bookings/conversion) and call/email actions.
+- **Campaign Management** (`/more/campaigns`) — full campaign list with spend/CPL/ROAS and status pills.
+

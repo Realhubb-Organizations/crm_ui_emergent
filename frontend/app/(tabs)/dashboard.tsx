@@ -93,23 +93,31 @@ export default function DashboardScreen() {
   const [insights, setInsights] = useState<Insight[]>([]);
   const [topProps, setTopProps] = useState<TopProperty[]>([]);
   const [topAgents, setTopAgents] = useState<TopAgent[]>([]);
+  const [insightsLoading, setInsightsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    const [s, a, f, i, tp, ta] = await Promise.all([
+    // Load core (fast) data first so the UI is interactive immediately.
+    const [s, a, f, tp, ta] = await Promise.all([
       api<Summary>('/dashboard/summary'),
       api<ActivityItem[]>('/dashboard/activities', { query: { limit: 8 } }),
       api<Followup[]>('/dashboard/followups'),
-      api<Insight[]>('/dashboard/insights'),
       api<TopProperty[]>('/dashboard/top-properties'),
       api<TopAgent[]>('/dashboard/top-agents'),
     ]);
     setSummary(s);
     setActivities(a);
     setFollowups(f);
-    setInsights(i);
     setTopProps(tp);
     setTopAgents(ta);
+
+    // AI insights may take 30–120s (Gemini cold start). Fetch separately so
+    // the rest of the dashboard renders immediately.
+    setInsightsLoading(true);
+    api<Insight[]>('/dashboard/insights')
+      .then((i) => setInsights(i))
+      .catch(() => setInsights([]))
+      .finally(() => setInsightsLoading(false));
   }, []);
 
   useEffect(() => {
@@ -323,25 +331,38 @@ export default function DashboardScreen() {
         </Section>
 
         <Section title="AI Insights" testID="ai-insights">
-          {insights.map((ins) => (
-            <Card key={ins.id} style={styles.insightCard}>
-              <View style={styles.insightHeader}>
-                <View style={styles.insightIcon}>
-                  <Sparkles size={16} color={colors.brand.royal} strokeWidth={2.5} />
-                </View>
-                <Text style={[typography.bodyMed, { color: colors.text.primary, flex: 1 }]}>
-                  {ins.title}
-                </Text>
-                <ArrowUpRight
-                  size={16}
-                  color={ins.trend === 'warn' ? colors.status.warningText : colors.status.successText}
-                />
-              </View>
-              <Text style={[typography.caption, { color: colors.text.secondary, marginTop: 6 }]}>
-                {ins.body}
-              </Text>
-            </Card>
-          ))}
+          {insightsLoading && insights.length === 0
+            ? [0, 1, 2].map((k) => (
+                <Card key={`sk-${k}`} style={styles.insightCard}>
+                  <View style={styles.insightHeader}>
+                    <View style={styles.insightIcon}>
+                      <Sparkles size={16} color={colors.brand.royal} strokeWidth={2.5} />
+                    </View>
+                    <View style={[styles.skelLine, { flex: 1 }]} />
+                  </View>
+                  <View style={[styles.skelLine, { marginTop: 10, width: '92%' }]} />
+                  <View style={[styles.skelLine, { marginTop: 6, width: '68%' }]} />
+                </Card>
+              ))
+            : insights.map((ins) => (
+                <Card key={ins.id} style={styles.insightCard}>
+                  <View style={styles.insightHeader}>
+                    <View style={styles.insightIcon}>
+                      <Sparkles size={16} color={colors.brand.royal} strokeWidth={2.5} />
+                    </View>
+                    <Text style={[typography.bodyMed, { color: colors.text.primary, flex: 1 }]}>
+                      {ins.title}
+                    </Text>
+                    <ArrowUpRight
+                      size={16}
+                      color={ins.trend === 'warn' ? colors.status.warningText : colors.status.successText}
+                    />
+                  </View>
+                  <Text style={[typography.caption, { color: colors.text.secondary, marginTop: 6 }]}>
+                    {ins.body}
+                  </Text>
+                </Card>
+              ))}
         </Section>
 
         <View style={{ height: 24 }} />
@@ -444,4 +465,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  skelLine: { height: 10, borderRadius: 5, backgroundColor: colors.bg.highlight },
 });
