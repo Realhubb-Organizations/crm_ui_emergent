@@ -1,11 +1,11 @@
 import { storage } from '@/src/utils/storage';
 
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+const BASE = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://taskezy-crm-admin.preview.emergentagent.com';
 const TOKEN_KEY = 'taskezy_access_token';
 
-if (!BASE) {
+if (!process.env.EXPO_PUBLIC_BACKEND_URL) {
   // eslint-disable-next-line no-console
-  console.warn('EXPO_PUBLIC_BACKEND_URL is missing');
+  console.log('EXPO_PUBLIC_BACKEND_URL is missing, falling back to production backend URL');
 }
 
 export async function getToken(): Promise<string | null> {
